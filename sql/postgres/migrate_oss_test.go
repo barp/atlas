@@ -1847,14 +1847,23 @@ func TestPlanChanges(t *testing.T) {
 				},
 			},
 		},
-		// Adding view is not supported in OSS.
+		// Views are now supported in OSS.
 		{
 			changes: []schema.Change{
 				&schema.AddView{
 					V: schema.NewView("v1", "SELECT * FROM users"),
 				},
 			},
-			wantErr: true,
+			wantPlan: &migrate.Plan{
+				Reversible:    false,
+				Transactional: true,
+				Changes: []*migrate.Change{
+					{
+						Cmd:     `CREATE VIEW "v1" AS SELECT * FROM users`,
+						Comment: `create view "v1"`,
+					},
+				},
+			},
 		},
 	}
 	for i, tt := range tests {
