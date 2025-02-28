@@ -828,12 +828,48 @@ func (s *state) dropView(drop *schema.DropView) error {
 	return nil
 }
 
-func (*state) modifyView(*schema.ModifyView) error {
-	return nil // unimplemented.
+func (s *state) modifyView(modify *schema.ModifyView) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", modify.To.Name)
+	)
+	b.WriteString("CREATE OR REPLACE VIEW ")
+	if modify.To.Schema != nil {
+		name = fmt.Sprintf("%q.%s", modify.To.Schema.Name, name)
+	}
+	b.WriteString(name)
+	b.WriteString(" AS ")
+	b.WriteString(modify.To.Def)
+
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  modify,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("modify view %q", modify.To.Name),
+	})
+	return nil
 }
 
-func (*state) renameView(*schema.RenameView) {
-	// unimplemented.
+func (s *state) renameView(rename *schema.RenameView) {
+	var (
+		b       = &strings.Builder{}
+		oldName = fmt.Sprintf("%q", rename.From.Name)
+		newName = fmt.Sprintf("%q", rename.To.Name)
+	)
+	b.WriteString("ALTER VIEW ")
+	if rename.From.Schema != nil {
+		oldName = fmt.Sprintf("%q.%s", rename.From.Schema.Name, oldName)
+	}
+	b.WriteString(oldName)
+	b.WriteString(" RENAME TO ")
+	b.WriteString(newName)
+
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  rename,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("rename view from %q to %q", rename.From.Name, rename.To.Name),
+	})
 }
 
 func (s *state) addFunc(*schema.AddFunc) error {
@@ -915,11 +951,11 @@ func (*state) dropTrigger(*schema.DropTrigger) error {
 	return nil // unimplemented.
 }
 
-func (*state) renameTrigger(*schema.RenameTrigger) error {
+func (*state) modifyTrigger(*schema.ModifyTrigger) error {
 	return nil // unimplemented.
 }
 
-func (*state) modifyTrigger(*schema.ModifyTrigger) error {
+func (*state) renameTrigger(*schema.RenameTrigger) error {
 	return nil // unimplemented.
 }
 
