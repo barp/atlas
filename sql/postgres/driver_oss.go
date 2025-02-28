@@ -843,15 +843,19 @@ func (s *state) modifyView(modify *schema.ModifyView) error {
 	var (
 		b    = &strings.Builder{}
 		name = fmt.Sprintf("%q", modify.To.Name)
+		def  = modify.To.Def
 	)
+	// Remove trailing semicolon from the view definition if present
+	def = strings.TrimSuffix(strings.TrimSpace(def), ";")
+	
 	b.WriteString("CREATE OR REPLACE VIEW ")
 	if modify.To.Schema != nil {
 		name = fmt.Sprintf("%q.%s", modify.To.Schema.Name, name)
 	}
 	b.WriteString(name)
-	b.WriteString(" AS ")
-	b.WriteString(modify.To.Def)
-
+	b.WriteString(" AS (")
+	b.WriteString(def)
+	b.WriteString(")")
 	cmd := b.String()
 	s.append(&migrate.Change{
 		Source:  modify,
