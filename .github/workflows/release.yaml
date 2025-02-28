@@ -50,6 +50,7 @@ jobs:
           else
             git log --pretty=format:"* %s (%h)" $PREV_TAG..${{ steps.get_version.outputs.VERSION }} > $CHANGELOG_FILE
           fi
+          echo "\n" >> $CHANGELOG_FILE
 
           # Use GitHub's special delimiter syntax for multiline outputs
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
