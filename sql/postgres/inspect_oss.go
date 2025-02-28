@@ -31,7 +31,10 @@ type inspect struct{ *conn }
 var _ schema.Inspector = (*inspect)(nil)
 
 // InspectRealm returns schema descriptions of all resources in the given realm.
-func (i *inspect) InspectRealm(ctx context.Context, opts *schema.InspectRealmOption) (_ *schema.Realm, rerr error) {
+func (i *inspect) InspectRealm(
+	ctx context.Context,
+	opts *schema.InspectRealmOption,
+) (_ *schema.Realm, rerr error) {
 	undo, err := i.noSearchPath(ctx)
 	if err != nil {
 		return nil, err
@@ -101,7 +104,10 @@ func (i *inspect) noSearchPath(ctx context.Context) (func() error, error) {
 		// Skip logic for CockroachDB.
 		return func() error { return nil }, nil
 	}
-	rows, err := i.QueryContext(ctx, "SELECT current_setting('search_path'), set_config('search_path', '', false)")
+	rows, err := i.QueryContext(
+		ctx,
+		"SELECT current_setting('search_path'), set_config('search_path', '', false)",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +117,11 @@ func (i *inspect) noSearchPath(ctx context.Context) (func() error, error) {
 	}
 	return func() error {
 		if sqlx.ValidString(prev) {
-			rows, err := i.QueryContext(ctx, "SELECT set_config('search_path', $1, false)", prev.String)
+			rows, err := i.QueryContext(
+				ctx,
+				"SELECT set_config('search_path', $1, false)",
+				prev.String,
+			)
 			if err != nil {
 				return err
 			}
@@ -123,7 +133,11 @@ func (i *inspect) noSearchPath(ctx context.Context) (func() error, error) {
 
 // InspectSchema returns schema descriptions of the tables in the given schema.
 // If the schema name is empty, the result will be the attached schema.
-func (i *inspect) InspectSchema(ctx context.Context, name string, opts *schema.InspectOptions) (s *schema.Schema, err error) {
+func (i *inspect) InspectSchema(
+	ctx context.Context,
+	name string,
+	opts *schema.InspectOptions,
+) (s *schema.Schema, err error) {
 	if name == "" && i.schema != "" {
 		name = i.schema // Otherwise, the "current_schema()" is used.
 	}
@@ -135,9 +149,13 @@ func (i *inspect) InspectSchema(ctx context.Context, name string, opts *schema.I
 	case n == 0:
 		// Empty string indicates current connected schema.
 		if name == "" {
-			return nil, &schema.NotExistError{Err: errors.New("postgres: current_schema() defined in search_path was not found")}
+			return nil, &schema.NotExistError{
+				Err: errors.New("postgres: current_schema() defined in search_path was not found"),
+			}
 		}
-		return nil, &schema.NotExistError{Err: fmt.Errorf("postgres: schema %q was not found", name)}
+		return nil, &schema.NotExistError{
+			Err: fmt.Errorf("postgres: schema %q was not found", name),
+		}
 	case n > 1:
 		return nil, fmt.Errorf("postgres: %d schemas were found for %q", n, name)
 	}
@@ -188,7 +206,11 @@ func (i *inspect) InspectSchema(ctx context.Context, name string, opts *schema.I
 	return schema.ExcludeSchema(r.Schemas[0], opts.Exclude)
 }
 
-func (i *inspect) inspectTables(ctx context.Context, r *schema.Realm, opts *schema.InspectOptions) error {
+func (i *inspect) inspectTables(
+	ctx context.Context,
+	r *schema.Realm,
+	opts *schema.InspectOptions,
+) error {
 	if err := i.tables(ctx, r, opts); err != nil {
 		return err
 	}
@@ -216,7 +238,11 @@ func (i *inspect) inspectTables(ctx context.Context, r *schema.Realm, opts *sche
 }
 
 // table returns the table from the database, or a NotExistError if the table was not found.
-func (i *inspect) tables(ctx context.Context, realm *schema.Realm, opts *schema.InspectOptions) error {
+func (i *inspect) tables(
+	ctx context.Context,
+	realm *schema.Realm,
+	opts *schema.InspectOptions,
+) error {
 	var (
 		args  []any
 		query = fmt.Sprintf(tablesQuery, nArgs(0, len(realm.Schemas)))
@@ -228,7 +254,11 @@ func (i *inspect) tables(ctx context.Context, realm *schema.Realm, opts *schema.
 		for _, t := range opts.Tables {
 			args = append(args, t)
 		}
-		query = fmt.Sprintf(tablesQueryArgs, nArgs(0, len(realm.Schemas)), nArgs(len(realm.Schemas), len(opts.Tables)))
+		query = fmt.Sprintf(
+			tablesQueryArgs,
+			nArgs(0, len(realm.Schemas)),
+			nArgs(len(realm.Schemas), len(opts.Tables)),
+		)
 	}
 	rows, err := i.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -463,7 +493,11 @@ func (i *inspect) inspectEnums(ctx context.Context, r *schema.Realm) error {
 		if e.Schema == nil {
 			s, ok := r.Schema(ns)
 			if !ok {
-				return fmt.Errorf("postgres: schema %q for enum %q was not found in inspection", ns, e.T)
+				return fmt.Errorf(
+					"postgres: schema %q for enum %q was not found in inspection",
+					ns,
+					e.T,
+				)
 			}
 			e.Schema = s
 			s.Objects = append(s.Objects, e)
@@ -611,7 +645,11 @@ func (i *inspect) addIndexes(s *schema.Schema, rows *sql.Rows, scope queryScope)
 		case included:
 			c, ok := scope.column(table, column.String)
 			if !ok {
-				return fmt.Errorf("postgres: INCLUDE column %q was not found for index %q", column.String, idx.Name)
+				return fmt.Errorf(
+					"postgres: INCLUDE column %q was not found for index %q",
+					column.String,
+					idx.Name,
+				)
 			}
 			var include IndexInclude
 			sqlx.Has(idx.Attrs, &include)
@@ -620,7 +658,11 @@ func (i *inspect) addIndexes(s *schema.Schema, rows *sql.Rows, scope queryScope)
 		case sqlx.ValidString(column):
 			part.C, ok = scope.column(table, column.String)
 			if !ok {
-				return fmt.Errorf("postgres: column %q was not found for index %q", column.String, idx.Name)
+				return fmt.Errorf(
+					"postgres: column %q was not found for index %q",
+					column.String,
+					idx.Name,
+				)
 			}
 			part.C.Indexes = append(part.C.Indexes, idx)
 			idx.Parts = append(idx.Parts, part)
@@ -640,7 +682,11 @@ func (i *inspect) addIndexes(s *schema.Schema, rows *sql.Rows, scope queryScope)
 }
 
 // mayAppendOps appends an operator_class attribute to the part in case it is not the default.
-func (i *inspect) mayAppendOps(part *schema.IndexPart, ns, name, params string, defaults bool) error {
+func (i *inspect) mayAppendOps(
+	part *schema.IndexPart,
+	ns, name, params string,
+	defaults bool,
+) error {
 	if name == "" || defaults && params == "" {
 		return nil
 	}
@@ -684,7 +730,10 @@ func (i *inspect) partitions(s *schema.Schema) error {
 		}
 		idxs := strings.Split(strings.TrimSpace(d.attrs), " ")
 		if len(idxs) == 0 {
-			return fmt.Errorf("postgres: no columns/expressions were found in partition key for column %q", t.Name)
+			return fmt.Errorf(
+				"postgres: no columns/expressions were found in partition key for column %q",
+				t.Name,
+			)
 		}
 		for i := range idxs {
 			switch idx, err := strconv.Atoi(idxs[i]); {
@@ -778,7 +827,10 @@ func (i *inspect) addChecks(s *schema.Schema, rows *sql.Rows) error {
 }
 
 // schemas returns the list of the schemas in the database.
-func (i *inspect) schemas(ctx context.Context, opts *schema.InspectRealmOption) ([]*schema.Schema, error) {
+func (i *inspect) schemas(
+	ctx context.Context,
+	opts *schema.InspectRealmOption,
+) ([]*schema.Schema, error) {
 	var (
 		args  []any
 		query = schemasQuery
@@ -823,7 +875,11 @@ func (i *inspect) schemas(ctx context.Context, opts *schema.InspectRealmOption) 
 	return schemas, nil
 }
 
-func (i *inspect) querySchema(ctx context.Context, query string, s *schema.Schema) (*sql.Rows, error) {
+func (i *inspect) querySchema(
+	ctx context.Context,
+	query string,
+	s *schema.Schema,
+) (*sql.Rows, error) {
 	args := []any{s.Name}
 	for _, t := range s.Tables {
 		args = append(args, t.Name)
@@ -845,7 +901,9 @@ func nArgs(start, n int) string {
 
 // A regexp to extracts the sequence name from a "nextval" expression.
 // nextval('<optional (quoted) schema>.<sequence name>'::regclass).
-var reNextval = regexp.MustCompile(`(?i) *nextval\('(?:"?[\w$]+"?\.)?"?([\w$]+_[\w$]+_seq)"?'(?:::regclass)*\) *$`)
+var reNextval = regexp.MustCompile(
+	`(?i) *nextval\('(?:"?[\w$]+"?\.)?"?([\w$]+_[\w$]+_seq)"?'(?:::regclass)*\) *$`,
+)
 
 func columnDefault(c *schema.Column, s string) {
 	switch m := reNextval.FindStringSubmatch(s); {
@@ -910,7 +968,6 @@ type (
 		schema.Type
 		T string
 		C string // Optional type class.
-
 	}
 
 	// RowType defines a composite type that represents a table row.
@@ -1439,7 +1496,8 @@ func (o *IndexOpClass) UnmarshalText(text []byte) error {
 func (o *IndexOpClass) parseParams(kv string) error {
 	switch {
 	case kv == "":
-	case strings.HasPrefix(kv, "(") && strings.HasSuffix(kv, ")"), strings.HasPrefix(kv, "{") && strings.HasSuffix(kv, "}"):
+	case strings.HasPrefix(kv, "(") && strings.HasSuffix(kv, ")"),
+		strings.HasPrefix(kv, "{") && strings.HasSuffix(kv, "}"):
 		for _, e := range strings.Split(kv[1:len(kv)-1], ",") {
 			if kv := strings.Split(strings.TrimSpace(e), "="); len(kv) == 2 {
 				o.Params = append(o.Params, struct{ N, V string }{N: kv[0], V: kv[1]})
@@ -1658,9 +1716,19 @@ ORDER BY
 )
 
 var (
-	indexesBelow11   = fmt.Sprintf(indexesQueryTmpl, "false", "false", "%s")
-	indexesAbove11   = fmt.Sprintf(indexesQueryTmpl, "(a.attname <> '' AND idx.indnatts > idx.indnkeyatts AND idx.ord > idx.indnkeyatts)", "false", "%s")
-	indexesAbove15   = fmt.Sprintf(indexesQueryTmpl, "(a.attname <> '' AND idx.indnatts > idx.indnkeyatts AND idx.ord > idx.indnkeyatts)", "idx.indnullsnotdistinct", "%s")
+	indexesBelow11 = fmt.Sprintf(indexesQueryTmpl, "false", "false", "%s")
+	indexesAbove11 = fmt.Sprintf(
+		indexesQueryTmpl,
+		"(a.attname <> '' AND idx.indnatts > idx.indnkeyatts AND idx.ord > idx.indnkeyatts)",
+		"false",
+		"%s",
+	)
+	indexesAbove15 = fmt.Sprintf(
+		indexesQueryTmpl,
+		"(a.attname <> '' AND idx.indnatts > idx.indnkeyatts AND idx.ord > idx.indnkeyatts)",
+		"idx.indnullsnotdistinct",
+		"%s",
+	)
 	indexesQueryTmpl = `
 SELECT
 	t.relname AS table_name,

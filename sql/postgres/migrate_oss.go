@@ -95,6 +95,14 @@ func (s *state) plan(changes []schema.Change) error {
 			s.renameTable(c)
 		case *schema.DropTable:
 			err = s.dropTable(c)
+		case *schema.AddView:
+			err = s.addView(c)
+		case *schema.DropView:
+			err = s.dropView(c)
+		case *schema.ModifyView:
+			err = s.modifyView(c)
+		case *schema.RenameView:
+			s.renameView(c)
 		case *schema.AddObject:
 			err = s.addObject(c)
 		case *schema.ModifyObject:

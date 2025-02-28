@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"ariga.io/atlas/schemahcl"
@@ -45,6 +46,11 @@ type (
 		// System variables that are set on `Open`.
 		version int
 		crdb    bool
+	}
+
+	// OrReplace describes that an OR REPLACE clause should be added to the CREATE VIEW operation.
+	OrReplace struct {
+		schema.Clause
 	}
 )
 
@@ -152,7 +158,11 @@ func (d *Driver) NormalizeSchema(ctx context.Context, s *schema.Schema) (*schema
 }
 
 // Lock implements the schema.Locker interface.
-func (d *Driver) Lock(ctx context.Context, name string, timeout time.Duration) (schema.UnlockFunc, error) {
+func (d *Driver) Lock(
+	ctx context.Context,
+	name string,
+	timeout time.Duration,
+) (schema.UnlockFunc, error) {
 	conn, err := sqlx.SingleConn(ctx, d.ExecQuerier)
 	if err != nil {
 		return nil, err
@@ -195,6 +205,12 @@ func (d *Driver) Snapshot(ctx context.Context) (migrate.RestoreFunc, error) {
 				Reason: fmt.Sprintf("found table %q in connected schema", s.Tables[0].Name),
 			}
 		}
+		if len(s.Views) > 0 {
+			return nil, &migrate.NotCleanError{
+				State:  schema.NewRealm(s),
+				Reason: fmt.Sprintf("found view %q in connected schema", s.Views[0].Name),
+			}
+		}
 		return d.SchemaRestoreFunc(s), nil
 	}
 	// Not bound to a schema.
@@ -212,6 +228,12 @@ func (d *Driver) Snapshot(ctx context.Context) (migrate.RestoreFunc, error) {
 			return nil, &migrate.NotCleanError{
 				State:  realm,
 				Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name),
+			}
+		}
+		if len(s.Views) > 0 {
+			return nil, &migrate.NotCleanError{
+				State:  realm,
+				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
 			}
 		}
 		return restore, nil
@@ -243,7 +265,17 @@ func (d *Driver) RealmRestoreFunc(desired *schema.Realm) migrate.RestoreFunc {
 	// In that case, all other schemas are dropped, but this one is cleared
 	// object by object. To keep process faster, we drop the schema and recreate it.
 	if !d.crdb && len(desired.Schemas) == 1 && desired.Schemas[0].Name == "public" {
-		if pb := desired.Schemas[0]; len(pb.Tables)+len(pb.Views)+len(pb.Funcs)+len(pb.Procs)+len(pb.Objects) == 0 {
+		if pb := desired.Schemas[0]; len(
+			pb.Tables,
+		)+len(
+			pb.Views,
+		)+len(
+			pb.Funcs,
+		)+len(
+			pb.Procs,
+		)+len(
+			pb.Objects,
+		) == 0 {
 			return func(ctx context.Context) error {
 				current, err := d.InspectRealm(ctx, nil)
 				if err != nil {
@@ -312,25 +344,54 @@ func (d *Driver) CheckClean(ctx context.Context, revT *migrate.TableIdent) error
 		switch s, err := d.InspectSchema(ctx, d.schema, nil); {
 		case err != nil:
 			return err
-		case len(s.Tables) == 0, (revT.Schema == "" || s.Name == revT.Schema) && len(s.Tables) == 1 && s.Tables[0].Name == revT.Name:
+		case len(s.Tables) == 0 && len(s.Views) == 0:
+			return nil
+		case (revT.Schema == "" || s.Name == revT.Schema) && len(s.Tables) == 1 && len(s.Views) == 0 && s.Tables[0].Name == revT.Name:
 			return nil
 		default:
-			return &migrate.NotCleanError{State: schema.NewRealm(s), Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name)}
+			if len(s.Tables) > 0 {
+				return &migrate.NotCleanError{
+					State:  schema.NewRealm(s),
+					Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name),
+				}
+			}
+			return &migrate.NotCleanError{
+				State:  schema.NewRealm(s),
+				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+			}
 		}
 	}
-	r, err := d.InspectRealm(ctx, nil)
+	r, err := d.InspectRealm(ctx, &schema.InspectRealmOption{
+		Mode: schema.InspectTables | schema.InspectViews,
+	})
 	if err != nil {
 		return err
 	}
 	for _, s := range r.Schemas {
 		switch {
-		case len(s.Tables) == 0 && s.Name == "public":
-		case len(s.Tables) == 0 || s.Name != revT.Schema:
+		case len(s.Tables) == 0 && len(s.Views) == 0 && s.Name == "public":
+		case (len(s.Tables) == 0 && len(s.Views) == 0) || s.Name != revT.Schema:
 			return &migrate.NotCleanError{State: r, Reason: fmt.Sprintf("found schema %q", s.Name)}
-		case len(s.Tables) > 1:
-			return &migrate.NotCleanError{State: r, Reason: fmt.Sprintf("found %d tables in schema %q", len(s.Tables), s.Name)}
+		case len(s.Tables) > 1 || (len(s.Tables) == 1 && len(s.Views) > 0):
+			return &migrate.NotCleanError{
+				State: r,
+				Reason: fmt.Sprintf(
+					"found %d tables and %d views in schema %q",
+					len(s.Tables),
+					len(s.Views),
+					s.Name,
+				),
+			}
+		case len(s.Views) > 0:
+			return &migrate.NotCleanError{
+				State:  r,
+				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+			}
 		case len(s.Tables) == 1 && s.Tables[0].Name != revT.Name:
-			return &migrate.NotCleanError{State: r, Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name)}
+			return &migrate.NotCleanError{
+				State:  r,
+				Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name),
+			}
 		}
 	}
 	return nil
@@ -640,8 +701,45 @@ func triggersSpec([]*schema.Trigger, *doc) error {
 	return nil // unimplemented.
 }
 
-func (*inspect) inspectViews(context.Context, *schema.Realm, *schema.InspectOptions) error {
-	return nil // unimplemented.
+func (i *inspect) inspectViews(
+	ctx context.Context,
+	r *schema.Realm,
+	opts *schema.InspectOptions,
+) error {
+	for _, s := range r.Schemas {
+		if err := (&viewInspect{conn: i.conn}).inspectViews(ctx, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type viewInspect struct {
+	conn *conn
+}
+
+// inspectViews queries and appends the views of the given schema.
+func (i *viewInspect) inspectViews(ctx context.Context, s *schema.Schema) error {
+	rows, err := i.conn.QueryContext(ctx, viewsQuery, s.Name)
+	if err != nil {
+		return fmt.Errorf("postgres: querying schema views: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, definition, comment sql.NullString
+		if err := rows.Scan(&name, &definition, &comment); err != nil {
+			return fmt.Errorf("postgres: scanning view row: %w", err)
+		}
+		if !name.Valid {
+			continue
+		}
+		v := schema.NewView(name.String, definition.String)
+		if comment.Valid {
+			v.SetComment(comment.String)
+		}
+		s.AddViews(v)
+	}
+	return rows.Err()
 }
 
 func (*inspect) inspectFuncs(context.Context, *schema.Realm, *schema.InspectOptions) error {
@@ -668,12 +766,66 @@ func (*inspect) inspectRealmObjects(context.Context, *schema.Realm, *schema.Insp
 	return nil // unimplemented.
 }
 
-func (*state) addView(*schema.AddView) error {
-	return nil // unimplemented.
+func (s *state) addView(add *schema.AddView) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", add.V.Name)
+	)
+	b.WriteString("CREATE ")
+	for _, c := range add.Extra {
+		// Check for OrReplace clause type
+		if _, ok := c.(*OrReplace); ok {
+			b.WriteString("OR REPLACE ")
+			break
+		}
+	}
+	b.WriteString("VIEW ")
+	if add.V.Schema != nil {
+		name = fmt.Sprintf("%q.%s", add.V.Schema.Name, name)
+	}
+	b.WriteString(name)
+	b.WriteString(" AS ")
+	b.WriteString(add.V.Def)
+
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  add,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("create view %q", add.V.Name),
+	})
+	return nil
 }
 
-func (*state) dropView(*schema.DropView) error {
-	return nil // unimplemented.
+func (s *state) dropView(drop *schema.DropView) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", drop.V.Name)
+	)
+	b.WriteString("DROP VIEW ")
+	for _, c := range drop.Extra {
+		if _, ok := c.(*schema.IfExists); ok {
+			b.WriteString("IF EXISTS ")
+			break
+		}
+	}
+	if drop.V.Schema != nil {
+		name = fmt.Sprintf("%q.%s", drop.V.Schema.Name, name)
+	}
+	b.WriteString(name)
+	for _, c := range drop.Extra {
+		if _, ok := c.(*Cascade); ok {
+			b.WriteString(" CASCADE")
+			break
+		}
+	}
+
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  drop,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("drop view %q", drop.V.Name),
+	})
+	return nil
 }
 
 func (*state) modifyView(*schema.ModifyView) error {
@@ -783,7 +935,10 @@ func (*diff) RealmObjectDiff(_, _ *schema.Realm) ([]schema.Change, error) {
 
 // SchemaObjectDiff returns a changeset for migrating schema objects from
 // one state to the other.
-func (*diff) SchemaObjectDiff(from, to *schema.Schema, _ *schema.DiffOptions) ([]schema.Change, error) {
+func (*diff) SchemaObjectDiff(
+	from, to *schema.Schema,
+	_ *schema.DiffOptions,
+) ([]schema.Change, error) {
 	var changes []schema.Change
 	// Drop or modify enums.
 	for _, o1 := range from.Objects {
@@ -825,42 +980,54 @@ func verifyChanges(context.Context, []schema.Change) error {
 
 func convertDomains(_ []*sqlspec.Table, domains []*domain, _ *schema.Realm) error {
 	if len(domains) > 0 {
-		return fmt.Errorf("postgres: domains are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: domains are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
 
 func convertAggregate(d *doc, _ *schema.Realm) error {
 	if len(d.Aggregates) > 0 {
-		return fmt.Errorf("postgres: aggregates are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: aggregates are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
 
 func convertSequences(_ []*sqlspec.Table, seqs []*sqlspec.Sequence, _ *schema.Realm) error {
 	if len(seqs) > 0 {
-		return fmt.Errorf("postgres: sequences are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: sequences are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
 
 func convertPolicies(_ []*sqlspec.Table, ps []*policy, _ *schema.Realm) error {
 	if len(ps) > 0 {
-		return fmt.Errorf("postgres: policies are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: policies are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
 
 func convertExtensions(exs []*extension, _ *schema.Realm) error {
 	if len(exs) > 0 {
-		return fmt.Errorf("postgres: extensions are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: extensions are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
 
 func convertEventTriggers(evs []*eventTrigger, _ *schema.Realm) error {
 	if len(evs) > 0 {
-		return fmt.Errorf("postgres: event triggers are not supported by this version. Use: https://atlasgo.io/getting-started")
+		return fmt.Errorf(
+			"postgres: event triggers are not supported by this version. Use: https://atlasgo.io/getting-started",
+		)
 	}
 	return nil
 }
@@ -1044,5 +1211,21 @@ WHERE
 	AND t5.objid IS NULL
 ORDER BY
 	t1.table_schema, t1.table_name
+`
+
+	// Query to list views in a schema
+	viewsQuery = `
+SELECT
+	table_name,
+	view_definition,
+	pg_catalog.obj_description(c.oid, 'pg_class') AS comment
+FROM
+	information_schema.views v
+	JOIN pg_catalog.pg_namespace n ON n.nspname = v.table_schema
+	JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relname = v.table_name
+WHERE
+	v.table_schema = $1
+ORDER BY
+	v.table_name
 `
 )
