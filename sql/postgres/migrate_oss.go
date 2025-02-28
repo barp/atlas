@@ -103,6 +103,14 @@ func (s *state) plan(changes []schema.Change) error {
 			err = s.modifyView(c)
 		case *schema.RenameView:
 			s.renameView(c)
+		case *schema.AddFunc:
+			err = s.addFunc(c)
+		case *schema.DropFunc:
+			err = s.dropFunc(c)
+		case *schema.ModifyFunc:
+			err = s.modifyFunc(c)
+		case *schema.RenameFunc:
+			err = s.renameFunc(c)
 		case *schema.AddObject:
 			err = s.addObject(c)
 		case *schema.ModifyObject:

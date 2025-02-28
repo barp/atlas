@@ -48,6 +48,88 @@ func (d *diff) SchemaAttrDiff(from, to *schema.Schema) []schema.Change {
 	return changes
 }
 
+// ProcFuncsDiff implements the sqlx.ProcFuncsDiffer interface and returns a changeset
+// for migrating functions from one schema state to the other.
+func (d *diff) ProcFuncsDiff(from, to *schema.Schema, _ *schema.DiffOptions) ([]schema.Change, error) {
+	var changes []schema.Change
+	
+	// Drop or modify functions
+	for _, f1 := range from.Funcs {
+		f2, ok := findFunc(to, f1)
+		if !ok {
+			changes = append(changes, &schema.DropFunc{F: f1})
+			continue
+		}
+		if funcChanged(f1, f2) {
+			changes = append(changes, &schema.ModifyFunc{From: f1, To: f2})
+		} else if f1.Name != f2.Name {
+			changes = append(changes, &schema.RenameFunc{From: f1, To: f2})
+		}
+	}
+	
+	// Add new functions
+	for _, f1 := range to.Funcs {
+		if _, ok := findFunc(from, f1); !ok {
+			changes = append(changes, &schema.AddFunc{F: f1})
+		}
+	}
+	
+	return changes, nil
+}
+
+// findFunc searches for a function in the schema that matches the given function.
+// Functions are matched by name and argument types.
+func findFunc(s *schema.Schema, f *schema.Func) (*schema.Func, bool) {
+	for _, f2 := range s.Funcs {
+		if f.Name == f2.Name && funcArgsEqual(f.Args, f2.Args) {
+			return f2, true
+		}
+	}
+	return nil, false
+}
+
+// funcArgsEqual checks if two function argument lists are equal.
+// Only the types are compared, not the names or default values.
+func funcArgsEqual(args1, args2 []*schema.FuncArg) bool {
+	if len(args1) != len(args2) {
+		return false
+	}
+	for i := range args1 {
+		// Compare only the type and mode, not the name or default value
+		if args1[i].Mode != args2[i].Mode {
+			return false
+		}
+		t1, err1 := FormatType(args1[i].Type)
+		t2, err2 := FormatType(args2[i].Type)
+		if err1 != nil || err2 != nil || t1 != t2 {
+			return false
+		}
+	}
+	return true
+}
+
+// funcChanged checks if a function has changed by comparing its body, return type, and language.
+func funcChanged(f1, f2 *schema.Func) bool {
+	// Compare return type
+	if f1.Ret != nil && f2.Ret != nil {
+		t1, err1 := FormatType(f1.Ret)
+		t2, err2 := FormatType(f2.Ret)
+		if err1 != nil || err2 != nil || t1 != t2 {
+			return true
+		}
+	} else if (f1.Ret == nil) != (f2.Ret == nil) {
+		return true
+	}
+	
+	// Compare language
+	if f1.Lang != f2.Lang {
+		return true
+	}
+	
+	// Compare body
+	return f1.Body != f2.Body
+}
+
 func skipDefaultComment(s *schema.Schema, public string) []schema.Attr {
 	attrs := s.Attrs
 	if c := (schema.Comment{}); sqlx.Has(attrs, &c) && c.Text == "standard public schema" && (s.Name == "" || s.Name == public) {

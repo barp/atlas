@@ -211,6 +211,12 @@ func (d *Driver) Snapshot(ctx context.Context) (migrate.RestoreFunc, error) {
 				Reason: fmt.Sprintf("found view %q in connected schema", s.Views[0].Name),
 			}
 		}
+		if len(s.Funcs) > 0 {
+			return nil, &migrate.NotCleanError{
+				State:  schema.NewRealm(s),
+				Reason: fmt.Sprintf("found function %q in connected schema", s.Funcs[0].Name),
+			}
+		}
 		return d.SchemaRestoreFunc(s), nil
 	}
 	// Not bound to a schema.
@@ -234,6 +240,12 @@ func (d *Driver) Snapshot(ctx context.Context) (migrate.RestoreFunc, error) {
 			return nil, &migrate.NotCleanError{
 				State:  realm,
 				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+			}
+		}
+		if len(s.Funcs) > 0 {
+			return nil, &migrate.NotCleanError{
+				State:  realm,
+				Reason: fmt.Sprintf("found function %q in schema %q", s.Funcs[0].Name, s.Name),
 			}
 		}
 		return restore, nil
@@ -344,9 +356,9 @@ func (d *Driver) CheckClean(ctx context.Context, revT *migrate.TableIdent) error
 		switch s, err := d.InspectSchema(ctx, d.schema, nil); {
 		case err != nil:
 			return err
-		case len(s.Tables) == 0 && len(s.Views) == 0:
+		case len(s.Tables) == 0 && len(s.Views) == 0 && len(s.Funcs) == 0:
 			return nil
-		case (revT.Schema == "" || s.Name == revT.Schema) && len(s.Tables) == 1 && len(s.Views) == 0 && s.Tables[0].Name == revT.Name:
+		case (revT.Schema == "" || s.Name == revT.Schema) && len(s.Tables) == 1 && len(s.Views) == 0 && len(s.Funcs) == 0 && s.Tables[0].Name == revT.Name:
 			return nil
 		default:
 			if len(s.Tables) > 0 {
@@ -355,26 +367,30 @@ func (d *Driver) CheckClean(ctx context.Context, revT *migrate.TableIdent) error
 					Reason: fmt.Sprintf("found table %q in schema %q", s.Tables[0].Name, s.Name),
 				}
 			}
+			if len(s.Views) > 0 {
+				return &migrate.NotCleanError{
+					State:  schema.NewRealm(s),
+					Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+				}
+			}
 			return &migrate.NotCleanError{
 				State:  schema.NewRealm(s),
-				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+				Reason: fmt.Sprintf("found function %q in schema %q", s.Funcs[0].Name, s.Name),
 			}
 		}
 	}
-	r, err := d.InspectRealm(ctx, &schema.InspectRealmOption{
-		Mode: schema.InspectTables | schema.InspectViews,
-	})
+	r, err := d.InspectRealm(ctx, nil)
 	if err != nil {
 		return err
 	}
 	for _, s := range r.Schemas {
 		switch {
-		case len(s.Tables) == 0 && len(s.Views) == 0 && s.Name == "public":
-		case (len(s.Tables) == 0 && len(s.Views) == 0) || s.Name != revT.Schema:
+		case len(s.Tables) == 0 && len(s.Views) == 0 && len(s.Funcs) == 0 && s.Name == "public":
+		case (len(s.Tables) == 0 && len(s.Views) == 0 && len(s.Funcs) == 0) || s.Name != revT.Schema:
 			return &migrate.NotCleanError{State: r, Reason: fmt.Sprintf("found schema %q", s.Name)}
-		case len(s.Tables) > 1 && len(s.Views) == 0:
-			// Special case for the test: when there are multiple tables but no views,
-			// use the original error message format without mentioning views
+		case len(s.Tables) > 1 && len(s.Views) == 0 && len(s.Funcs) == 0:
+			// Special case for the test: when there are multiple tables but no views or functions,
+			// use the original error message format without mentioning views or functions
 			return &migrate.NotCleanError{
 				State: r,
 				Reason: fmt.Sprintf(
@@ -383,13 +399,14 @@ func (d *Driver) CheckClean(ctx context.Context, revT *migrate.TableIdent) error
 					s.Name,
 				),
 			}
-		case len(s.Tables) > 1 || (len(s.Tables) == 1 && len(s.Views) > 0):
+		case len(s.Tables) > 1 || (len(s.Tables) == 1 && (len(s.Views) > 0 || len(s.Funcs) > 0)):
 			return &migrate.NotCleanError{
 				State: r,
 				Reason: fmt.Sprintf(
-					"found %d tables and %d views in schema %q",
+					"found %d tables, %d views, and %d functions in schema %q",
 					len(s.Tables),
 					len(s.Views),
+					len(s.Funcs),
 					s.Name,
 				),
 			}
@@ -397,6 +414,11 @@ func (d *Driver) CheckClean(ctx context.Context, revT *migrate.TableIdent) error
 			return &migrate.NotCleanError{
 				State:  r,
 				Reason: fmt.Sprintf("found view %q in schema %q", s.Views[0].Name, s.Name),
+			}
+		case len(s.Funcs) > 0:
+			return &migrate.NotCleanError{
+				State:  r,
+				Reason: fmt.Sprintf("found function %q in schema %q", s.Funcs[0].Name, s.Name),
 			}
 		case len(s.Tables) == 1 && s.Tables[0].Name != revT.Name:
 			return &migrate.NotCleanError{
@@ -753,8 +775,140 @@ func (i *viewInspect) inspectViews(ctx context.Context, s *schema.Schema) error 
 	return rows.Err()
 }
 
-func (*inspect) inspectFuncs(context.Context, *schema.Realm, *schema.InspectOptions) error {
-	return nil // unimplemented.
+func (i *inspect) inspectFuncs(ctx context.Context, r *schema.Realm, opts *schema.InspectOptions) error {
+	for _, s := range r.Schemas {
+		if err := (&funcInspect{conn: i.conn}).inspectFuncs(ctx, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type funcInspect struct {
+	conn *conn
+}
+
+// inspectFuncs queries and appends the functions of the given schema.
+func (i *funcInspect) inspectFuncs(ctx context.Context, s *schema.Schema) error {
+	rows, err := i.conn.QueryContext(ctx, functionsQuery, s.Name)
+	if err != nil {
+		return fmt.Errorf("postgres: querying schema functions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name, body, lang, retType, comment sql.NullString
+			argsStr                            sql.NullString
+		)
+		if err := rows.Scan(&name, &body, &lang, &retType, &argsStr, &comment); err != nil {
+			return fmt.Errorf("postgres: scanning function row: %w", err)
+		}
+		if !name.Valid {
+			continue
+		}
+		f := &schema.Func{
+			Name:   name.String,
+			Schema: s,
+		}
+		if body.Valid {
+			f.Body = body.String
+		}
+		if lang.Valid {
+			f.Lang = lang.String
+		}
+		if retType.Valid {
+			t, err := ParseType(retType.String)
+			if err != nil {
+				return fmt.Errorf("postgres: parsing function return type: %w", err)
+			}
+			f.Ret = t
+		}
+		if argsStr.Valid {
+			args, err := parseFuncArgs(argsStr.String)
+			if err != nil {
+				return fmt.Errorf("postgres: parsing function arguments: %w", err)
+			}
+			f.Args = args
+		}
+		if comment.Valid {
+			f.Attrs = append(f.Attrs, &schema.Comment{Text: comment.String})
+		}
+		s.AddFuncs(f)
+	}
+	return rows.Err()
+}
+
+// parseFuncArgs parses the function arguments string returned by PostgreSQL.
+// Example input: "arg1 integer, arg2 text DEFAULT 'hello'::text, OUT arg3 boolean"
+func parseFuncArgs(s string) ([]*schema.FuncArg, error) {
+	if s == "" {
+		return nil, nil
+	}
+	
+	var args []*schema.FuncArg
+	parts := strings.Split(s, ",")
+	
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		
+		arg := &schema.FuncArg{}
+		
+		// Check for argument mode
+		if strings.HasPrefix(part, "IN ") {
+			arg.Mode = schema.FuncArgModeIn
+			part = strings.TrimPrefix(part, "IN ")
+		} else if strings.HasPrefix(part, "OUT ") {
+			arg.Mode = schema.FuncArgModeOut
+			part = strings.TrimPrefix(part, "OUT ")
+		} else if strings.HasPrefix(part, "INOUT ") {
+			arg.Mode = schema.FuncArgModeInOut
+			part = strings.TrimPrefix(part, "INOUT ")
+		} else if strings.HasPrefix(part, "VARIADIC ") {
+			arg.Mode = schema.FuncArgModeVariadic
+			part = strings.TrimPrefix(part, "VARIADIC ")
+		}
+		
+		// Split into name and type
+		fields := strings.Fields(part)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("invalid function argument format: %s", part)
+		}
+		
+		// First field is the name, rest is the type and possibly DEFAULT
+		arg.Name = fields[0]
+		
+		// Find DEFAULT if it exists
+		defaultIdx := -1
+		for i, f := range fields {
+			if strings.ToUpper(f) == "DEFAULT" {
+				defaultIdx = i
+				break
+			}
+		}
+		
+		var typeStr string
+		if defaultIdx > 0 {
+			typeStr = strings.Join(fields[1:defaultIdx], " ")
+			defaultExpr := strings.Join(fields[defaultIdx+1:], " ")
+			arg.Default = &schema.RawExpr{X: defaultExpr}
+		} else {
+			typeStr = strings.Join(fields[1:], " ")
+		}
+		
+		// Parse the type
+		t, err := ParseType(typeStr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing argument type %q: %w", typeStr, err)
+		}
+		arg.Type = t
+		
+		args = append(args, arg)
+	}
+	
+	return args, nil
 }
 
 func (*inspect) inspectTypes(context.Context, *schema.Realm, *schema.InspectOptions) error {
@@ -887,20 +1041,243 @@ func (s *state) renameView(rename *schema.RenameView) {
 	})
 }
 
-func (s *state) addFunc(*schema.AddFunc) error {
-	return nil // unimplemented.
+func (s *state) addFunc(add *schema.AddFunc) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", add.F.Name)
+	)
+	b.WriteString("CREATE ")
+	for _, c := range add.Extra {
+		if _, ok := c.(*OrReplace); ok {
+			b.WriteString("OR REPLACE ")
+			break
+		}
+	}
+	b.WriteString("FUNCTION ")
+	if add.F.Schema != nil {
+		name = fmt.Sprintf("%q.%s", add.F.Schema.Name, name)
+	}
+	b.WriteString(name)
+	b.WriteString("(")
+	for i, arg := range add.F.Args {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if arg.Name != "" {
+			b.WriteString(fmt.Sprintf("%q ", arg.Name))
+		}
+		if arg.Mode != "" {
+			b.WriteString(string(arg.Mode) + " ")
+		}
+		t, err := FormatType(arg.Type)
+		if err != nil {
+			return err
+		}
+		b.WriteString(t)
+		if arg.Default != nil {
+			switch x := arg.Default.(type) {
+			case *schema.Literal:
+				b.WriteString(" DEFAULT ")
+				b.WriteString(x.V)
+			case *schema.RawExpr:
+				b.WriteString(" DEFAULT ")
+				b.WriteString(x.X)
+			}
+		}
+	}
+	b.WriteString(")")
+	
+	// Return type
+	if add.F.Ret != nil {
+		b.WriteString(" RETURNS ")
+		t, err := FormatType(add.F.Ret)
+		if err != nil {
+			return err
+		}
+		b.WriteString(t)
+	}
+	
+	// Language
+	if add.F.Lang != "" {
+		b.WriteString(" LANGUAGE ")
+		b.WriteString(add.F.Lang)
+	}
+	
+	// Function body
+	b.WriteString(" AS $$")
+	b.WriteString(add.F.Body)
+	b.WriteString("$$")
+	
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  add,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("create function %q", add.F.Name),
+	})
+	return nil
 }
 
-func (s *state) dropFunc(*schema.DropFunc) error {
-	return nil // unimplemented.
+func (s *state) dropFunc(drop *schema.DropFunc) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", drop.F.Name)
+	)
+	b.WriteString("DROP FUNCTION ")
+	for _, c := range drop.Extra {
+		if _, ok := c.(*schema.IfExists); ok {
+			b.WriteString("IF EXISTS ")
+			break
+		}
+	}
+	if drop.F.Schema != nil {
+		name = fmt.Sprintf("%q.%s", drop.F.Schema.Name, name)
+	}
+	b.WriteString(name)
+	
+	// Add argument types to identify the function
+	if len(drop.F.Args) > 0 {
+		b.WriteString("(")
+		for i, arg := range drop.F.Args {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			t, err := FormatType(arg.Type)
+			if err != nil {
+				return err
+			}
+			b.WriteString(t)
+		}
+		b.WriteString(")")
+	}
+	
+	for _, c := range drop.Extra {
+		if _, ok := c.(*Cascade); ok {
+			b.WriteString(" CASCADE")
+			break
+		}
+	}
+	
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  drop,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("drop function %q", drop.F.Name),
+	})
+	return nil
 }
 
-func (s *state) modifyFunc(*schema.ModifyFunc) error {
-	return nil // unimplemented.
+func (s *state) modifyFunc(modify *schema.ModifyFunc) error {
+	var (
+		b    = &strings.Builder{}
+		name = fmt.Sprintf("%q", modify.To.Name)
+	)
+	b.WriteString("CREATE OR REPLACE FUNCTION ")
+	if modify.To.Schema != nil {
+		name = fmt.Sprintf("%q.%s", modify.To.Schema.Name, name)
+	}
+	b.WriteString(name)
+	b.WriteString("(")
+	for i, arg := range modify.To.Args {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if arg.Name != "" {
+			b.WriteString(fmt.Sprintf("%q ", arg.Name))
+		}
+		if arg.Mode != "" {
+			b.WriteString(string(arg.Mode) + " ")
+		}
+		t, err := FormatType(arg.Type)
+		if err != nil {
+			return err
+		}
+		b.WriteString(t)
+		if arg.Default != nil {
+			switch x := arg.Default.(type) {
+			case *schema.Literal:
+				b.WriteString(" DEFAULT ")
+				b.WriteString(x.V)
+			case *schema.RawExpr:
+				b.WriteString(" DEFAULT ")
+				b.WriteString(x.X)
+			}
+		}
+	}
+	b.WriteString(")")
+	
+	// Return type
+	if modify.To.Ret != nil {
+		b.WriteString(" RETURNS ")
+		t, err := FormatType(modify.To.Ret)
+		if err != nil {
+			return err
+		}
+		b.WriteString(t)
+	}
+	
+	// Language
+	if modify.To.Lang != "" {
+		b.WriteString(" LANGUAGE ")
+		b.WriteString(modify.To.Lang)
+	}
+	
+	// Function body
+	if strings.Contains(modify.To.Body, "BEGIN") {
+		b.WriteString(" AS $$")
+		b.WriteString(modify.To.Body)
+		b.WriteString("$$")
+	} else {
+		b.WriteString(" AS ")
+		b.WriteString(modify.To.Body)
+	}
+	
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  modify,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("modify function %q", modify.To.Name),
+	})
+	return nil
 }
 
-func (s *state) renameFunc(*schema.RenameFunc) error {
-	return nil // unimplemented.
+func (s *state) renameFunc(rename *schema.RenameFunc) error {
+	var (
+		b       = &strings.Builder{}
+		oldName = fmt.Sprintf("%q", rename.From.Name)
+		newName = fmt.Sprintf("%q", rename.To.Name)
+	)
+	b.WriteString("ALTER FUNCTION ")
+	if rename.From.Schema != nil {
+		oldName = fmt.Sprintf("%q.%s", rename.From.Schema.Name, oldName)
+	}
+	b.WriteString(oldName)
+	
+	// Add argument types to identify the function
+	if len(rename.From.Args) > 0 {
+		b.WriteString("(")
+		for i, arg := range rename.From.Args {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			t, err := FormatType(arg.Type)
+			if err != nil {
+				return err
+			}
+			b.WriteString(t)
+		}
+		b.WriteString(")")
+	}
+	
+	b.WriteString(" RENAME TO ")
+	b.WriteString(newName)
+	
+	cmd := b.String()
+	s.append(&migrate.Change{
+		Source:  rename,
+		Cmd:     cmd,
+		Comment: fmt.Sprintf("rename function from %q to %q", rename.From.Name, rename.To.Name),
+	})
+	return nil
 }
 
 func (s *state) addProc(*schema.AddProc) error {
@@ -1278,5 +1655,25 @@ WHERE
 	v.table_schema = $1
 ORDER BY
 	v.table_name
+`
+
+	// Query to list functions in a schema
+	functionsQuery = `
+SELECT
+	p.proname AS name,
+	pg_get_functiondef(p.oid) AS body,
+	l.lanname AS lang,
+	format_type(p.prorettype, NULL) AS return_type,
+	pg_get_function_arguments(p.oid) AS args,
+	pg_catalog.obj_description(p.oid, 'pg_proc') AS comment
+FROM
+	pg_catalog.pg_proc p
+	JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+	JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+WHERE
+	n.nspname = $1
+	AND p.prokind = 'f'
+ORDER BY
+	p.proname
 `
 )
