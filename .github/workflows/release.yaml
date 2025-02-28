@@ -66,12 +66,13 @@ jobs:
           # Create a directory for the binaries
           mkdir -p dist
 
+          cd cmd/atlas
           # Build for different platforms with the version flag
-          GOOS=linux GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-linux-amd64-$VERSION ./cmd/atlas
-          GOOS=linux GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-linux-arm64-$VERSION ./cmd/atlas
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-darwin-amd64-$VERSION ./cmd/atlas
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-darwin-arm64-$VERSION ./cmd/atlas
-          GOOS=windows GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-windows-amd64-$VERSION.exe ./cmd/atlas
+          GOOS=linux GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o ../../dist/atlas-linux-amd64-$VERSION .
+          GOOS=linux GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o ../../dist/atlas-linux-arm64-$VERSION .
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o ../../dist/atlas-darwin-amd64-$VERSION .
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o ../../dist/atlas-darwin-arm64-$VERSION .
+          GOOS=windows GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o ../../dist/atlas-windows-amd64-$VERSION.exe .
 
       - name: Compress binaries
         run: |
