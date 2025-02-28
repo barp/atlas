@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*" # Matches semantic version tags like v1.2.3, v1.2.3-rc1, etc.
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for tags and branches
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/atlas/go.mod
+
+      - name: Get tag version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        run: |
+          # Run core tests
+          go test -race ./...
+
+          # Run CLI tests
+          cd cmd/atlas
+          go test -race ./...
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 ${{ steps.get_version.outputs.VERSION }}^ 2>/dev/null || echo "")
+
+          # If there's no previous tag, get all commits
+          if [ -z "$PREV_TAG" ]; then
+            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            git log --pretty=format:"* %s (%h)" ${{ steps.get_version.outputs.VERSION }} >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            git log --pretty=format:"* %s (%h)" $PREV_TAG..${{ steps.get_version.outputs.VERSION }} >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build binaries
+        run: |
+          # Strip the 'v' prefix for the version
+          VERSION=${GITHUB_REF#refs/tags/v}
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+
+          # Create a directory for the binaries
+          mkdir -p dist
+
+          # Build for different platforms with the version flag
+          GOOS=linux GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-linux-amd64-$VERSION ./cmd/atlas
+          GOOS=linux GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-linux-arm64-$VERSION ./cmd/atlas
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-darwin-amd64-$VERSION ./cmd/atlas
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-darwin-arm64-$VERSION ./cmd/atlas
+          GOOS=windows GOARCH=amd64 go build -ldflags="-X 'ariga.io/atlas/cmd/atlas/internal/cmdapi.version=$TAG_VERSION'" -o dist/atlas-windows-amd64-$VERSION.exe ./cmd/atlas
+
+      - name: Compress binaries
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd dist
+
+          # Compress Linux binaries
+          tar -czf atlas-linux-amd64-$VERSION.tar.gz atlas-linux-amd64-$VERSION
+          tar -czf atlas-linux-arm64-$VERSION.tar.gz atlas-linux-arm64-$VERSION
+
+          # Compress macOS binaries
+          tar -czf atlas-darwin-amd64-$VERSION.tar.gz atlas-darwin-amd64-$VERSION
+          tar -czf atlas-darwin-arm64-$VERSION.tar.gz atlas-darwin-arm64-$VERSION
+
+          # Compress Windows binary
+          zip atlas-windows-amd64-$VERSION.zip atlas-windows-amd64-$VERSION.exe
+
+          # Create checksums for compressed files
+          sha256sum *.tar.gz *.zip > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## Changes in ${{ steps.get_version.outputs.VERSION }}
+
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ## Installation
+
+            See the [documentation](https://atlasgo.io/getting-started) for installation instructions.
+          draft: false
+          prerelease: ${{ contains(steps.get_version.outputs.VERSION, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
