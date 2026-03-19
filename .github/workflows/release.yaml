@@ -26,16 +26,11 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Build atlas CLI for tests
-        run: |
-          cd cmd/atlas
-          go build -o ../../atlas .
-          echo "${{ github.workspace }}" >> $GITHUB_PATH
-
       - name: Run tests
         run: |
-          # Run core tests
-          go test -race ./...
+          # Run core tests (exclude atlasexec/sdk — they have their own CI
+          # and their integration tests require the proprietary atlas binary)
+          go test -race $(go list ./... | grep -v -E 'atlasexec|/sdk')
 
           # Run CLI tests
           cd cmd/atlas
